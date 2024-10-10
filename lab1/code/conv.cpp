@@ -119,7 +119,7 @@ void naive_conv2d() {
 }
 
 // Naive 2D convolution implementation
-void conv2d_groundtruth() {
+void calc_conv2d_groundtruth() {
     // Initialize output_naive to 0
     memset(output_groundtruth, 0, sizeof(output_groundtruth));
 
@@ -168,7 +168,7 @@ void initialize() {
             }
         }
     }
-    conv2d_groundtruth(); // ground truth
+    calc_conv2d_groundtruth(); // ground truth
 }
 
 // Test function to compare im2col result and naive conv result
@@ -177,7 +177,7 @@ void test() {
         for (int oc = 0; oc < output_channels; ++oc) {
             for (int h = 0; h < output_H; ++h) {
                 for (int w = 0; w < output_W; ++w) {
-                    assert(output_feature_map[n][oc][h][w] == conv2d_groundtruth[n][oc][h][w]);
+                    assert(output_feature_map[n][oc][h][w] == output_groundtruth[n][oc][h][w]);
                 }
             }
         }
