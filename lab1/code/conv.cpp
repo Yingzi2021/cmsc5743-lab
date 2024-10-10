@@ -18,7 +18,7 @@ constexpr int output_W = (feature_W - kernel_size + 2 * padding) / stride + 1;
 int input_feature_map[batch][input_channels][feature_H][feature_W];  
 int filter[output_channels][input_channels][kernel_size][kernel_size];
 int output_feature_map[batch][output_channels][output_H][output_W];
-int output_naive[batch][output_channels][output_H][output_W];
+int output_groundtruth[batch][output_channels][output_H][output_W];
 
 int im_col[batch][input_channels * kernel_size * kernel_size][output_H * output_W]; // convert input feature map to cols
 int filter_col[output_channels][input_channels * kernel_size * kernel_size]; // convert filter to cols
@@ -93,7 +93,7 @@ void matmul() {
 // Naive 2D convolution implementation
 void naive_conv2d() {
     // Initialize output_naive to 0
-    memset(output_naive, 0, sizeof(output_naive));
+    memset(output_feature_map, 0, sizeof(output_feature_map));
 
     // Perform naive convolution
     for (int n = 0; n < batch; ++n) {
@@ -107,6 +107,34 @@ void naive_conv2d() {
                                 int w_in = w_out * stride + kw - padding;
                                 if (h_in >= 0 && h_in < feature_H && w_in >= 0 && w_in < feature_W) {
                                     output_feature_map[n][oc][h_out][w_out] +=
+                                        input_feature_map[n][ic][h_in][w_in] * filter[oc][ic][kh][kw];
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Naive 2D convolution implementation
+void conv2d_groundtruth() {
+    // Initialize output_naive to 0
+    memset(output_groundtruth, 0, sizeof(output_groundtruth));
+
+    // Perform naive convolution
+    for (int n = 0; n < batch; ++n) {
+        for (int oc = 0; oc < output_channels; ++oc) {
+            for (int h_out = 0; h_out < output_H; ++h_out) {
+                for (int w_out = 0; w_out < output_W; ++w_out) {
+                    for (int ic = 0; ic < input_channels; ++ic) {
+                        for (int kh = 0; kh < kernel_size; ++kh) {
+                            for (int kw = 0; kw < kernel_size; ++kw) {
+                                int h_in = h_out * stride + kh - padding;
+                                int w_in = w_out * stride + kw - padding;
+                                if (h_in >= 0 && h_in < feature_H && w_in >= 0 && w_in < feature_W) {
+                                    output_groundtruth[n][oc][h_out][w_out] +=
                                         input_feature_map[n][ic][h_in][w_in] * filter[oc][ic][kh][kw];
                                 }
                             }
@@ -140,7 +168,7 @@ void initialize() {
             }
         }
     }
-    //naive_conv2d(); // ground truth
+    conv2d_groundtruth(); // ground truth
 }
 
 // Test function to compare im2col result and naive conv result
@@ -149,7 +177,7 @@ void test() {
         for (int oc = 0; oc < output_channels; ++oc) {
             for (int h = 0; h < output_H; ++h) {
                 for (int w = 0; w < output_W; ++w) {
-                    assert(output_feature_map[n][oc][h][w] == output_naive[n][oc][h][w]);
+                    assert(output_feature_map[n][oc][h][w] == conv2d_groundtruth[n][oc][h][w]);
                 }
             }
         }
@@ -171,7 +199,7 @@ int main() {
         auto start_time = get_time();
         im2col();
         //naive_conv2d();
-        //test();
+        test();
         printf("%f\n", get_time() - start_time);
         avg_time += get_time() - start_time;
     }
