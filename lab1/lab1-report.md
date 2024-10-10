@@ -128,14 +128,32 @@ void im2col(){
 }
 ```
 
+the `col2im` process of output matrix is integrated in `matmul()` through index control.
+
+```c++
+ // Perform matrix multiplication
+    for (int n = 0; n < batch; ++n) {
+        for (int oc = 0; oc < output_channels; ++oc) {
+            for (int i = 0; i < output_H * output_W; ++i) { // Iterate over output feature map positions
+                for (int j = 0; j < input_channels * kernel_size * kernel_size; ++j) { // Iterate over filter_col and im_col
+                    output_feature_map[n][oc][i / output_W][i % output_W] += 
+                        filter_col[oc][j] * im_col[n][j][i]; //perform output column to matrix by using index `i / output_W` and `i % output_W`
+                }
+            }
+        }
+    }
+```
+
+ 
+
 ### Performance
 
 | im2col      | naive_conv2d | compiler optimization |
 | ----------- | ------------ | --------------------- |
-| 0.00585728  | 0.0059365    | O0                    |
-| 0.00110053  | 0.0011761    | O1                    |
-| 0.00047975  | 0.000640936  | O2                    |
-| 0.000194348 | 0.000217691  | O3                    |
+| 0.00356808  | 0.0037315    | O0                    |
+| 0.000478044 | 0.000726737  | O1                    |
+| 0.000325091 | 0.000545107  | O2                    |
+| 0.000173129 | 0.000218444  | O3                    |
 
 Here is the complete [code](./code/conv.cpp) and [running script](./code/run_conv.sh).
 
