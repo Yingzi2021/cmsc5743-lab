@@ -83,7 +83,7 @@ void matmul() {
             for (int i = 0; i < output_H * output_W; ++i) { // Iterate over output feature map positions
                 for (int j = 0; j < input_channels * kernel_size * kernel_size; ++j) { // Iterate over filter_col and im_col
                     output_feature_map[n][oc][i / output_W][i % output_W] += 
-                        filter_col[oc][j] * im_col[n][j][i];
+                        filter_col[oc][j] * im_col[n][j][i]; //perform output column to matrix by using index `i / output_W` and `i % output_W`
                 }
             }
         }
