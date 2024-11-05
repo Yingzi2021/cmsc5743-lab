@@ -18,3 +18,12 @@
 - kernel size: 3 
 - stride: 1 
 - padding: 0
+
+参考：
+
+```
+https://no5-aaron-wu.github.io/2021/11/16/AI-Algorithm-4-Winograd/
+https://github.com/dorthyluu/cs194-winograd/blob/master/winograd.cpp
+https://github.com/yester31/Winograd_Conv2d_cpp
+```
+
