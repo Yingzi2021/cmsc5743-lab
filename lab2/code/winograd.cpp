@@ -280,9 +280,9 @@ int main() {
 
     // 比较结果
     if (compare_results(Y_naive, Y_winograd)) {
-        cout << "朴素卷积和Winograd卷积的结果一致！" << endl;
+        cout << "same!" << endl;
     } else {
-        cout << "朴素卷积和Winograd卷积的结果不一致！" << endl;
+        cout << "different!" << endl;
     }
 
     return 0;
