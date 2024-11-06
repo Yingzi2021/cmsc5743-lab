@@ -1,5 +1,7 @@
 # CMSC5743 Lab 2
 
+[TOC]
+
 ## Question 1
 
 **Q1** Implement the matrix multiplication using Strassen Algorithm and compare the speed with original matmul() in lab 01. The shape of matrix A is I × K and the shape of matrix B is K × J. The matrix size setting remains the same as lab 01, the value of I, K, J will be fixed at 256, 512 or 1024. 
@@ -374,4 +376,53 @@ for (int n = 0; n < batch; n++) {
 
 ### Analysis
 
-My implementation doesn't improve the performance. 
+The slightly lower performance observed in the Winograd implementation could be attributed to the overhead from small loop iterations and the complexity of transformations. In contrast, the im2col method's simpler operations and potential for better cache utilization might lead to improved performance under the given conditions.
+
+(1) **Potential Overhead from Small Loop Iterations**:
+
+The Winograd implementation includes several nested loops with small iteration counts (e.g., `alpha = 4`). When loop bodies contain minimal computations, the overhead associated with loop control structures—such as initialization, condition checking, and incrementing—can become significant relative to the computations performed. This overhead might contribute to reduced performance in the Winograd method.
+
+```c++
+// Small loops in Winograd transformations
+for (int i = 0; i < alpha; i++) {
+    for (int j = 0; j < alpha; j++) {
+        temp[i][j] = 0.0f;
+        for (int k1 = 0; k1 < alpha; k1++) {
+            temp[i][j] += BT[i][k1] * d[k1][j];
+        }
+    }
+}
+```
+
+In this snippet, the small size of `alpha` results in loops that may not perform enough computations to offset the loop overhead.
+
+(2) **Comparison with the im2col Method**:
+
+- **Simpler Operations**: The im2col method involves transforming the input into a matrix format and performing standard matrix multiplication. This process is relatively straightforward and involves fewer computational steps compared to the multiple transformation stages in the Winograd algorithm. The simplicity of operations in im2col might lead to better performance in certain scenarios.
+- **Potential for Better Cache Utilization**: The data structures used in the im2col method often lead to sequential memory access patterns, which can enhance cache performance. Improved cache utilization may contribute to faster execution times despite the lack of advanced optimizations in the code.
+
+```c++
+// Input transformation in im2col
+void input2col() {
+    for (int n = 0; n < batch; ++n) {
+        for (int h_out = 0; h_out < output_H; ++h_out) {
+            for (int w_out = 0; w_out < output_W; ++w_out) {
+                int col_index = h_out * output_W + w_out;
+                for (int c = 0; c < input_channels; ++c) {
+                    int channel_offset = c * kernel_size * kernel_size;
+                    for (int kh = 0; kh < kernel_size; ++kh) {
+                        for (int kw = 0; kw < kernel_size; ++kw) {
+                            int h_in = h_out + kh;
+                            int w_in = w_out + kw;
+                            im_col[n][channel_offset + kh * kernel_size + kw][col_index] =
+                                input_feature_map[n][c][h_in][w_in];
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+```
+
+This code demonstrates sequential data access, which may improve memory access efficiency and cache performance.
