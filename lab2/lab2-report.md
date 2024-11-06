@@ -131,9 +131,11 @@ Profile:
 
 Visualization:
 
+![](../figures/6.png)
 
+**Analysis:**
 
-Analysis:
+As threshold grows from 1 to 256(I = 256), the running time first increase and then decrease, indicating that a proper threshold can largely empower the performance of Strassen algorithm. When threshold == 256, Strassen algorithm degenerates to naive matrix multiplication.
 
 > The basic problem is that you're recursing down to a leaf size of 1 with your strassen implementaiton. Strassen's algorithm has a better Big O complexity, but constants *do* matter in reality, which means in reality you're better off with a standard n^3 matrix multiplication for smaller problem sizes.
 >
@@ -163,5 +165,201 @@ Analysis:
 - stride: 1 
 - padding: 0
 
+### Profile
 
+| Winograd   | Im2col     |
+| ---------- | ---------- |
+| 2.860322 s | 0.109753 s |
 
+### Implementation
+
+**Step 1: Initialize Transformation Matrices (G, B, A) for F(2, 3)**
+
+```c++
+// Matrix G transforms the filter
+    float G[alpha][r] = {
+        {1, 0, 0},
+        {0.5f, 0.5f, 0.5f},
+        {0.5f, -0.5f, 0.5f},
+        {0, 0, 1}
+    };
+
+    // Matrix B transforms the input feature map
+    float B[alpha][alpha] = {
+        {1, 0, 0, 0},
+        {0, 1, -1, 1},
+        {-1, 1, 1, 0},
+        {0, 0, 0, -1}
+    };
+
+    // Matrix A is used for the inverse transformation to obtain the final output
+    float A[alpha][m] = {
+        {1, 0},
+        {1, 1},
+        {1, -1},
+        {0, -1}
+    };
+```
+
+**Step 2: Transform the Filter (Compute Matrix U)**
+
+The filter is transformed by computing U=G⋅g⋅G^T, where g is the original filter. This transformation reduces the kernel size to fit the smaller Winograd domain, leading to fewer calculations in later steps.
+
+```c++
+// Pre-compute the transformed filter matrix U
+float U[alpha][alpha][output_channels][input_channels];
+for (int k = 0; k < output_channels; k++) {
+    for (int c = 0; c < input_channels; c++) {
+        // Copy filter values for the current output and input channel
+        float g_kc[r][r];
+        for (int i = 0; i < r; i++)
+            for (int j = 0; j < r; j++)
+                g_kc[i][j] = static_cast<float>(filter[k][c][i][j]);
+
+        // Compute G * g_kc * G^T for the transformed filter
+        float temp[alpha][r];
+        for (int i = 0; i < alpha; i++) {
+            for (int j = 0; j < r; j++) {
+                temp[i][j] = 0.0f;
+                for (int k1 = 0; k1 < r; k1++)
+                    temp[i][j] += G[i][k1] * g_kc[k1][j];
+            }
+        }
+        float u[alpha][alpha];
+        for (int i = 0; i < alpha; i++) {
+            for (int j = 0; j < alpha; j++) {
+                u[i][j] = 0.0f;
+                for (int k1 = 0; k1 < r; k1++)
+                    u[i][j] += temp[i][k1] * G[k1][j];
+            }
+        }
+
+        // Store the transformed filter matrix U
+        for (int xi = 0; xi < alpha; xi++)
+            for (int nu = 0; nu < alpha; nu++)
+                U[xi][nu][k][c] = u[xi][nu];
+    }
+}
+```
+
+**Step 3: Transform the Input Feature Map (Compute Matrix V)**
+
+The input is divided into tiles, each transformed by V=BT⋅d⋅B, where ddd is the original input tile. The transformation aligns the input feature map with the Winograd domain for efficient element-wise multiplication in the next step.
+
+```c++
+float V[alpha][alpha][input_channels][P];
+for (int n = 0; n < batch; n++) {
+    for (int c = 0; c < input_channels; c++) {
+        for (int y = 0; y < tile_h; y++) {
+            for (int x = 0; x < tile_w; x++) {
+                float d[alpha][alpha] = {0};  // Input tile
+                for (int i = 0; i < alpha; i++) {
+                    for (int j = 0; j < alpha; j++) {
+                        int src_row = y * m + i;
+                        int src_col = x * m + j;
+                        d[i][j] = (src_row < feature_H && src_col < feature_W)
+                                  ? static_cast<float>(input_feature_map[n][c][src_row][src_col])
+                                  : 0.0f;
+                    }
+                }
+
+                // Apply B^T * d * B
+                float temp[alpha][alpha];
+                for (int i = 0; i < alpha; i++)
+                    for (int j = 0; j < alpha; j++) {
+                        temp[i][j] = 0.0f;
+                        for (int k1 = 0; k1 < alpha; k1++)
+                            temp[i][j] += B[i][k1] * d[k1][j];
+                    }
+
+                float v[alpha][alpha];
+                for (int i = 0; i < alpha; i++)
+                    for (int j = 0; j < alpha; j++) {
+                        v[i][j] = 0.0f;
+                        for (int k1 = 0; k1 < alpha; k1++)
+                            v[i][j] += temp[i][k1] * B[k1][j];
+                    }
+
+                int b = n * (tile_h * tile_w) + y * tile_w + x;
+                for (int xi = 0; xi < alpha; xi++)
+                    for (int nu = 0; nu < alpha; nu++)
+                        V[xi][nu][c][b] = v[xi][nu];
+            }
+        }
+    }
+}
+```
+
+**Step 4: Element-wise Multiplication (Compute Matrix M)**
+
+The transformed filter U and transformed input V are combined through element-wise multiplication to produce M, which represents the convolution in the Winograd domain.
+
+```c++
+float M[alpha][alpha][output_channels][P];
+for (int xi = 0; xi < alpha; xi++) {
+    for (int nu = 0; nu < alpha; nu++) {
+        for (int k = 0; k < output_channels; k++) {
+            for (int p = 0; p < P; p++) {
+                float sum = 0.0f;
+                for (int c = 0; c < input_channels; c++) {
+                    sum += U[xi][nu][k][c] * V[xi][nu][c][p];
+                }
+                M[xi][nu][k][p] = sum;
+            }
+        }
+    }
+}
+```
+
+**Step 5 Inverse Transformation (Get Final Output)**
+
+Finally, the result matrix MMM undergoes an inverse transformation using AAA to obtain the output tiles. These tiles are then assembled into the final output feature map.
+
+```c++
+// Inverse transform of M to get the final output
+memset(output_winograd, 0, sizeof(output_winograd));
+for (int n = 0; n < batch; n++) {
+    for (int k = 0; k < output_channels; k++) {
+        for (int y = 0; y < tile_h; y++) {
+            for (int x = 0; x < tile_w; x++) {
+                int b = n * (tile_h * tile_w) + y * tile_w + x;
+
+                // A^T * M * A to get output tile Y
+                float temp_m[alpha][alpha];
+                for (int xi = 0; xi < alpha; xi++)
+                    for (int nu = 0; nu < alpha; nu++)
+                        temp_m[xi][nu] = M[xi][nu][k][b];
+
+                float temp1[m][alpha];
+                for (int i = 0; i < m; i++)
+                    for (int j = 0; j < alpha; j++) {
+                        temp1[i][j] = 0.0f;
+                        for (int k1 = 0; k1 < alpha; k1++)
+                            temp1[i][j] += A[i][k1] * temp_m[k1][j];
+                    }
+
+                float Y_tile[m][m];
+                for (int i = 0; i < m; i++)
+                    for (int j = 0; j < m; j++) {
+                        Y_tile[i][j] = 0.0f;
+                        for (int k1 = 0; k1 < alpha; k1++)
+                            Y_tile[i][j] += temp1[i][k1] * A[k1][j];
+                    }
+
+                // Copy Y_tile back to the output feature map
+                for (int i = 0; i < m; i++) {
+                    for (int j = 0; j < m; j++) {
+                        int dst_row = y * m + i;
+                        int dst_col = x * m + j;
+                        if (dst_row < output_H && dst_col < output_W) {
+                            output_winograd[n][k][dst_row][dst_col] = static_cast<int>(round(Y_tile[i][j]));
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+```
+
+### Analysis
