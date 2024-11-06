@@ -169,36 +169,46 @@ As threshold grows from 1 to 256(I = 256), the running time first increase and t
 
 | Winograd   | Im2col     |
 | ---------- | ---------- |
-| 2.860322 s | 0.109753 s |
+| 0.00198472 s | 0.00163886 s |
 
 ### Implementation
 
 **Step 1: Initialize Transformation Matrices (G, B, A) for F(2, 3)**
 
 ```c++
-// Matrix G transforms the filter
+// Initialize transformation matrices for Winograd convolution
     float G[alpha][r] = {
         {1, 0, 0},
         {0.5f, 0.5f, 0.5f},
         {0.5f, -0.5f, 0.5f},
         {0, 0, 1}
     };
+    float GT[r][alpha];
+    for (int i = 0; i < alpha; i++)
+        for (int j = 0; j < r; j++)
+            GT[j][i] = G[i][j];
 
-    // Matrix B transforms the input feature map
     float B[alpha][alpha] = {
         {1, 0, 0, 0},
         {0, 1, -1, 1},
         {-1, 1, 1, 0},
         {0, 0, 0, -1}
     };
+    float BT[alpha][alpha];
+    for (int i = 0; i < alpha; i++)
+        for (int j = 0; j < alpha; j++)
+            BT[j][i] = B[i][j];
 
-    // Matrix A is used for the inverse transformation to obtain the final output
     float A[alpha][m] = {
         {1, 0},
         {1, 1},
         {1, -1},
         {0, -1}
     };
+    float AT[m][alpha];
+    for (int i = 0; i < alpha; i++)
+        for (int j = 0; j < m; j++)
+            AT[j][i] = A[i][j];
 ```
 
 **Step 2: Transform the Filter (Compute Matrix U)**
@@ -230,7 +240,7 @@ for (int k = 0; k < output_channels; k++) {
             for (int j = 0; j < alpha; j++) {
                 u[i][j] = 0.0f;
                 for (int k1 = 0; k1 < r; k1++)
-                    u[i][j] += temp[i][k1] * G[k1][j];
+                    u[i][j] += temp[i][k1] * GT[k1][j];
             }
         }
 
@@ -269,7 +279,7 @@ for (int n = 0; n < batch; n++) {
                     for (int j = 0; j < alpha; j++) {
                         temp[i][j] = 0.0f;
                         for (int k1 = 0; k1 < alpha; k1++)
-                            temp[i][j] += B[i][k1] * d[k1][j];
+                            temp[i][j] += BT[i][k1] * d[k1][j];
                     }
 
                 float v[alpha][alpha];
@@ -335,7 +345,7 @@ for (int n = 0; n < batch; n++) {
                     for (int j = 0; j < alpha; j++) {
                         temp1[i][j] = 0.0f;
                         for (int k1 = 0; k1 < alpha; k1++)
-                            temp1[i][j] += A[i][k1] * temp_m[k1][j];
+                            temp1[i][j] += AT[i][k1] * temp_m[k1][j];
                     }
 
                 float Y_tile[m][m];
@@ -363,3 +373,5 @@ for (int n = 0; n < batch; n++) {
 ```
 
 ### Analysis
+
+My implementation doesn't improve the performance. 
