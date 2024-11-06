@@ -156,29 +156,38 @@ void im2col_convolution() {
 // Implementation of Winograd convolution algorithm
 void winograd_convolution() {
     // Initialize transformation matrices for Winograd convolution
-    // Matrix G transforms the filter
     float G[alpha][r] = {
         {1, 0, 0},
         {0.5f, 0.5f, 0.5f},
         {0.5f, -0.5f, 0.5f},
         {0, 0, 1}
     };
+    float GT[r][alpha];
+    for (int i = 0; i < alpha; i++)
+        for (int j = 0; j < r; j++)
+            GT[j][i] = G[i][j];
 
-    // Matrix B transforms the input feature map
     float B[alpha][alpha] = {
         {1, 0, 0, 0},
         {0, 1, -1, 1},
         {-1, 1, 1, 0},
         {0, 0, 0, -1}
     };
+    float BT[alpha][alpha];
+    for (int i = 0; i < alpha; i++)
+        for (int j = 0; j < alpha; j++)
+            BT[j][i] = B[i][j];
 
-    // Matrix A is used for the inverse transformation to obtain the final output
     float A[alpha][m] = {
         {1, 0},
         {1, 1},
         {1, -1},
         {0, -1}
     };
+    float AT[m][alpha];
+    for (int i = 0; i < alpha; i++)
+        for (int j = 0; j < m; j++)
+            AT[j][i] = A[i][j];
 
     // Pre-compute the transformed filter matrix U
     float U[alpha][alpha][output_channels][input_channels];
@@ -204,7 +213,7 @@ void winograd_convolution() {
                 for (int j = 0; j < alpha; j++) {
                     u[i][j] = 0.0f;
                     for (int k1 = 0; k1 < r; k1++)
-                        u[i][j] += temp[i][k1] * G[k1][j];
+                        u[i][j] += temp[i][k1] * GT[k1][j];
                 }
             }
 
@@ -238,7 +247,7 @@ void winograd_convolution() {
                         for (int j = 0; j < alpha; j++) {
                             temp[i][j] = 0.0f;
                             for (int k1 = 0; k1 < alpha; k1++)
-                                temp[i][j] += B[i][k1] * d[k1][j];
+                                temp[i][j] += BT[i][k1] * d[k1][j];
                         }
 
                     float v[alpha][alpha];
@@ -293,7 +302,7 @@ void winograd_convolution() {
                         for (int j = 0; j < alpha; j++) {
                             temp1[i][j] = 0.0f;
                             for (int k1 = 0; k1 < alpha; k1++)
-                                temp1[i][j] += A[i][k1] * temp_m[k1][j];
+                                temp1[i][j] += AT[i][k1] * temp_m[k1][j];
                         }
 
                     float Y_tile[m][m];
@@ -343,6 +352,7 @@ int main() {
         auto start_time = get_time();
         im2col_convolution();
         test(output_naive, output_im2col);  // Verify result matches naive convolution
+        printf("%f\n", get_time() - start_time);
         avg_time_im2col += get_time() - start_time;
     }
     std::cout << "Average Time for im2col: " << (avg_time_im2col / 32) << " seconds" << std::endl;
@@ -353,6 +363,7 @@ int main() {
         auto start_time = get_time();
         winograd_convolution();
         test(output_naive, output_winograd);  // Verify result matches naive convolution
+        printf("%f\n", get_time() - start_time);
         avg_time_winograd += get_time() - start_time;
     }
     std::cout << "Average Time for Winograd: " << (avg_time_winograd / 32) << " seconds" << std::endl;
