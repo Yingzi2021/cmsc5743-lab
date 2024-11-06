@@ -1,24 +1,39 @@
+#include <sys/time.h>
 #include <iostream>
-#include <vector>
+#include <cstring>
+#include <cassert>
 #include <cmath>
 #include <cstdlib>
 #include <ctime>
-#include <cassert>
-#include <sys/time.h>
 
-using namespace std;
+constexpr int batch = 1;
+constexpr int feature_H = 56;
+constexpr int feature_W = 56;
+constexpr int input_channels = 3;
+constexpr int output_channels = 64;
+constexpr int kernel_size = 3;
+constexpr int stride = 1;
+constexpr int padding = 0;
 
-const int m = 2; // Output tile size
-const int r = 3; // Kernel size
-const int alpha = m + r - 1; // Transformed matrix size
-const int H = 56; // Input height
-const int W = 56; // Input width
-const int K = 64; // Number of output channels
-const int C = 3; // Number of input channels
-const int N = 1; // Batch size
-const int tile_h = static_cast<int>(ceil(static_cast<float>(H) / m));
-const int tile_w = static_cast<int>(ceil(static_cast<float>(W) / m));
-const int P = N * tile_h * tile_w; // Number of tiles
+constexpr int output_H = feature_H - kernel_size + 1;
+constexpr int output_W = feature_W - kernel_size + 1;
+
+// Winograd 参数
+constexpr int m = 2;  // Output tile size
+constexpr int r = kernel_size;  // Kernel size
+constexpr int alpha = m + r - 1;  // Transformed matrix size
+constexpr int tile_h = static_cast<int>(ceil(static_cast<float>(feature_H) / m));
+constexpr int tile_w = static_cast<int>(ceil(static_cast<float>(feature_W) / m));
+constexpr int P = batch * tile_h * tile_w;  // Number of tiles
+
+int input_feature_map[batch][input_channels][feature_H][feature_W];
+int filter[output_channels][input_channels][kernel_size][kernel_size];
+int output_im2col[batch][output_channels][output_H][output_W];
+int output_winograd[batch][output_channels][output_H][output_W];
+int output_naive[batch][output_channels][output_H][output_W];
+
+int im_col[batch][input_channels * kernel_size * kernel_size][output_H * output_W];  // Convert input feature map to cols
+int filter_col[output_channels][input_channels * kernel_size * kernel_size];  // Convert filter to cols
 
 double get_time() {
     struct timeval tv;
@@ -26,55 +41,25 @@ double get_time() {
     return tv.tv_sec + 1e-6 * tv.tv_usec;
 }
 
-// 矩阵乘法 (a * b) 结果保存在 c 中
-void matrix_multiply(const vector<vector<float>> &a, const vector<vector<float>> &b, vector<vector<float>> &c) {
-    int rows = a.size();
-    int cols = b[0].size();
-    int inner = a[0].size();
-    c.assign(rows, vector<float>(cols, 0.0f));
-
-    for (int i = 0; i < rows; i++) {
-        for (int j = 0; j < cols; j++) {
-            for (int k = 0; k < inner; k++) {
-                c[i][j] += a[i][k] * b[k][j];
-            }
-        }
-    }
-}
-
-// 矩阵转置
-void matrix_transpose(const vector<vector<float>> &a, vector<vector<float>> &result) {
-    int rows = a.size();
-    int cols = a[0].size();
-    result.assign(cols, vector<float>(rows));
-
-    for (int i = 0; i < rows; i++) {
-        for (int j = 0; j < cols; j++) {
-            result[j][i] = a[i][j];
-        }
-    }
-}
-
 // 生成随机输入和卷积核
-void generate_random_input_and_kernel(vector<vector<vector<vector<int>>>> &D, vector<vector<vector<vector<int>>>> &g) {
-    D.resize(N, vector<vector<vector<int>>>(C, vector<vector<int>>(H, vector<int>(W))));
-    g.resize(K, vector<vector<vector<int>>>(C, vector<vector<int>>(r, vector<int>(r))));
-
+void generate_random_input_and_kernel() {
     srand(static_cast<unsigned>(time(0)));
-    for (int n = 0; n < N; n++) {
-        for (int c = 0; c < C; c++) {
-            for (int i = 0; i < H; i++) {
-                for (int j = 0; j < W; j++) {
-                    D[n][c][i][j] = rand() % 10;
+    // 初始化输入特征图
+    for (int n = 0; n < batch; n++) {
+        for (int c = 0; c < input_channels; c++) {
+            for (int i = 0; i < feature_H; i++) {
+                for (int j = 0; j < feature_W; j++) {
+                    input_feature_map[n][c][i][j] = rand() % 10;
                 }
             }
         }
     }
-    for (int k = 0; k < K; k++) {
-        for (int c = 0; c < C; c++) {
-            for (int i = 0; i < r; i++) {
-                for (int j = 0; j < r; j++) {
-                    g[k][c][i][j] = rand() % 10;
+    // 初始化卷积核
+    for (int k = 0; k < output_channels; k++) {
+        for (int c = 0; c < input_channels; c++) {
+            for (int i = 0; i < kernel_size; i++) {
+                for (int j = 0; j < kernel_size; j++) {
+                    filter[k][c][i][j] = rand() % 10;
                 }
             }
         }
@@ -82,23 +67,20 @@ void generate_random_input_and_kernel(vector<vector<vector<vector<int>>>> &D, ve
 }
 
 // 朴素卷积实现
-void naive_convolution(const vector<vector<vector<vector<int>>>> &D, const vector<vector<vector<vector<int>>>> &g, vector<vector<vector<vector<int>>>> &Y_naive) {
-    int out_height = H - r + 1;
-    int out_width = W - r + 1;
-    Y_naive.resize(N, vector<vector<vector<int>>>(K, vector<vector<int>>(out_height, vector<int>(out_width, 0))));
-
-    for (int n = 0; n < N; n++) {
-        for (int k = 0; k < K; k++) {
-            for (int c = 0; c < C; c++) {
-                for (int i = 0; i < out_height; i++) {
-                    for (int j = 0; j < out_width; j++) {
+void naive_convolution() {
+    memset(output_naive, 0, sizeof(output_naive));
+    for (int n = 0; n < batch; n++) {
+        for (int k = 0; k < output_channels; k++) {
+            for (int c = 0; c < input_channels; c++) {
+                for (int i = 0; i < output_H; i++) {
+                    for (int j = 0; j < output_W; j++) {
                         int sum = 0;
-                        for (int p = 0; p < r; p++) {
-                            for (int q = 0; q < r; q++) {
-                                sum += D[n][c][i + p][j + q] * g[k][c][p][q];
+                        for (int p = 0; p < kernel_size; p++) {
+                            for (int q = 0; q < kernel_size; q++) {
+                                sum += input_feature_map[n][c][i + p][j + q] * filter[k][c][p][q];
                             }
                         }
-                        Y_naive[n][k][i][j] += sum;
+                        output_naive[n][k][i][j] += sum;
                     }
                 }
             }
@@ -106,69 +88,153 @@ void naive_convolution(const vector<vector<vector<vector<int>>>> &D, const vecto
     }
 }
 
-// Winograd卷积实现
-void winograd_convolution(const vector<vector<vector<vector<int>>>> &D, const vector<vector<vector<vector<int>>>> &g, vector<vector<vector<vector<int>>>> &Y_winograd) {
+// im2col 方法实现卷积
+void input2col() {
+    for (int n = 0; n < batch; ++n) {
+        for (int h_out = 0; h_out < output_H; ++h_out) {
+            for (int w_out = 0; w_out < output_W; ++w_out) {
+                int col_index = h_out * output_W + w_out;  // This is the column index in im_col
+                for (int c = 0; c < input_channels; ++c) {
+                    int channel_offset = c * kernel_size * kernel_size;
+                    for (int kh = 0; kh < kernel_size; ++kh) {
+                        for (int kw = 0; kw < kernel_size; ++kw) {
+                            int h_in = h_out * stride + kh - padding;
+                            int w_in = w_out * stride + kw - padding;
+                            if (h_in >= 0 && h_in < feature_H && w_in >= 0 && w_in < feature_W) {
+                                // Store the value from input feature map to the corresponding position in im_col
+                                im_col[n][channel_offset + kh * kernel_size + kw][col_index] =
+                                    input_feature_map[n][c][h_in][w_in];
+                            } else {
+                                // Padding: if the input location is outside the bounds, set it to 0
+                                im_col[n][channel_offset + kh * kernel_size + kw][col_index] = 0;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// The filter2col function that will convert the filters to column format
+void filter2col() {
+    for (int oc = 0; oc < output_channels; ++oc) {
+        for (int ic = 0; ic < input_channels; ++ic) {
+            int col_index = ic * kernel_size * kernel_size;
+            for (int kh = 0; kh < kernel_size; ++kh) {
+                for (int kw = 0; kw < kernel_size; ++kw) {
+                    filter_col[oc][col_index + kh * kernel_size + kw] =
+                        filter[oc][ic][kh][kw];
+                }
+            }
+        }
+    }
+}
+
+// Matrix multiplication to calculate the output feature map
+void matmul() {
+    // Initialize output_feature_map to 0
+    memset(output_im2col, 0, sizeof(output_im2col));
+
+    // Perform matrix multiplication
+    for (int n = 0; n < batch; ++n) {
+        for (int oc = 0; oc < output_channels; ++oc) {
+            for (int i = 0; i < output_H * output_W; ++i) {  // Iterate over output feature map positions
+                for (int j = 0; j < input_channels * kernel_size * kernel_size; ++j) {  // Iterate over filter_col and im_col
+                    output_im2col[n][oc][i / output_W][i % output_W] +=
+                        filter_col[oc][j] * im_col[n][j][i];  // perform output column to matrix by using index `i / output_W` and `i % output_W`
+                }
+            }
+        }
+    }
+}
+
+void im2col_convolution() {
+    input2col();
+    filter2col();
+    matmul();
+}
+
+// Winograd 卷积实现
+void winograd_convolution() {
     // 初始化Winograd变换矩阵
-    vector<vector<float>> G = {
+    float G[alpha][r] = {
         {1, 0, 0},
         {0.5f, 0.5f, 0.5f},
         {0.5f, -0.5f, 0.5f},
         {0, 0, 1}
     };
-    vector<vector<float>> B = {
+    float GT[r][alpha];
+    for (int i = 0; i < alpha; i++)
+        for (int j = 0; j < r; j++)
+            GT[j][i] = G[i][j];
+
+    float B[alpha][alpha] = {
         {1, 0, 0, 0},
         {0, 1, -1, 1},
         {-1, 1, 1, 0},
         {0, 0, 0, -1}
     };
-    vector<vector<float>> A = {
+    float BT[alpha][alpha];
+    for (int i = 0; i < alpha; i++)
+        for (int j = 0; j < alpha; j++)
+            BT[j][i] = B[i][j];
+
+    float A[alpha][m] = {
         {1, 0},
         {1, 1},
         {1, -1},
         {0, -1}
     };
+    float AT[m][alpha];
+    for (int i = 0; i < alpha; i++)
+        for (int j = 0; j < m; j++)
+            AT[j][i] = A[i][j];
 
     // 计算变换后的卷积核U
-    vector<vector<vector<vector<float>>>> U(alpha, vector<vector<vector<float>>>(alpha, vector<vector<float>>(K, vector<float>(C, 0.0f))));
-    for (int k = 0; k < K; k++) {
-        for (int c = 0; c < C; c++) {
-            vector<vector<float>> g_kc(r, vector<float>(r));
-            for (int i = 0; i < r; i++) {
+    float U[alpha][alpha][output_channels][input_channels];
+    for (int k = 0; k < output_channels; k++) {
+        for (int c = 0; c < input_channels; c++) {
+            float g_kc[r][r];
+            for (int i = 0; i < r; i++)
+                for (int j = 0; j < r; j++)
+                    g_kc[i][j] = static_cast<float>(filter[k][c][i][j]);
+
+            float temp[alpha][r];
+            for (int i = 0; i < alpha; i++)
                 for (int j = 0; j < r; j++) {
-                    g_kc[i][j] = static_cast<float>(g[k][c][i][j]);
+                    temp[i][j] = 0.0f;
+                    for (int k1 = 0; k1 < r; k1++)
+                        temp[i][j] += G[i][k1] * g_kc[k1][j];
                 }
-            }
-            vector<vector<float>> temp(alpha, vector<float>(r));
-            vector<vector<float>> u(alpha, vector<float>(alpha));
 
-            // G * g_kc
-            matrix_multiply(G, g_kc, temp);
-            // temp * G^T
-            vector<vector<float>> G_T;
-            matrix_transpose(G, G_T);
-            matrix_multiply(temp, G_T, u);
+            float u[alpha][alpha];
+            for (int i = 0; i < alpha; i++)
+                for (int j = 0; j < alpha; j++) {
+                    u[i][j] = 0.0f;
+                    for (int k1 = 0; k1 < r; k1++)
+                        u[i][j] += temp[i][k1] * GT[k1][j];
+                }
 
-            for (int xi = 0; xi < alpha; xi++) {
-                for (int nu = 0; nu < alpha; nu++) {
+            for (int xi = 0; xi < alpha; xi++)
+                for (int nu = 0; nu < alpha; nu++)
                     U[xi][nu][k][c] = u[xi][nu];
-                }
-            }
         }
     }
 
     // 计算变换后的输入V
-    vector<vector<vector<vector<float>>>> V(alpha, vector<vector<vector<float>>>(alpha, vector<vector<float>>(C, vector<float>(P, 0.0f))));
-    for (int n = 0; n < N; n++) {
-        for (int c = 0; c < C; c++) {
+    float V[alpha][alpha][input_channels][P];
+    for (int n = 0; n < batch; n++) {
+        for (int c = 0; c < input_channels; c++) {
             for (int y = 0; y < tile_h; y++) {
                 for (int x = 0; x < tile_w; x++) {
-                    vector<vector<float>> d(alpha, vector<float>(alpha, 0.0f));
+                    float d[alpha][alpha] = {0};
                     for (int i = 0; i < alpha; i++) {
                         for (int j = 0; j < alpha; j++) {
                             int src_row = y * m + i;
                             int src_col = x * m + j;
-                            if (src_row < H && src_col < W) {
-                                d[i][j] = static_cast<float>(D[n][c][src_row][src_col]);
+                            if (src_row < feature_H && src_col < feature_W) {
+                                d[i][j] = static_cast<float>(input_feature_map[n][c][src_row][src_col]);
                             } else {
                                 d[i][j] = 0.0f;
                             }
@@ -176,32 +242,39 @@ void winograd_convolution(const vector<vector<vector<vector<int>>>> &D, const ve
                     }
 
                     // B^T * d * B
-                    vector<vector<float>> temp(alpha, vector<float>(alpha));
-                    vector<vector<float>> B_T;
-                    matrix_transpose(B, B_T);
-                    vector<vector<float>> temp2(alpha, vector<float>(alpha));
-                    matrix_multiply(B_T, d, temp);
-                    matrix_multiply(temp, B, temp2);
+                    float temp[alpha][alpha];
+                    for (int i = 0; i < alpha; i++)
+                        for (int j = 0; j < alpha; j++) {
+                            temp[i][j] = 0.0f;
+                            for (int k1 = 0; k1 < alpha; k1++)
+                                temp[i][j] += BT[i][k1] * d[k1][j];
+                        }
+
+                    float v[alpha][alpha];
+                    for (int i = 0; i < alpha; i++)
+                        for (int j = 0; j < alpha; j++) {
+                            v[i][j] = 0.0f;
+                            for (int k1 = 0; k1 < alpha; k1++)
+                                v[i][j] += temp[i][k1] * B[k1][j];
+                        }
 
                     int b = n * (tile_h * tile_w) + y * tile_w + x;
-                    for (int xi = 0; xi < alpha; xi++) {
-                        for (int nu = 0; nu < alpha; nu++) {
-                            V[xi][nu][c][b] = temp2[xi][nu];
-                        }
-                    }
+                    for (int xi = 0; xi < alpha; xi++)
+                        for (int nu = 0; nu < alpha; nu++)
+                            V[xi][nu][c][b] = v[xi][nu];
                 }
             }
         }
     }
 
     // 元素级乘法得到M
-    vector<vector<vector<vector<float>>>> M(alpha, vector<vector<vector<float>>>(alpha, vector<vector<float>>(K, vector<float>(P, 0.0f))));
+    float M[alpha][alpha][output_channels][P];
     for (int xi = 0; xi < alpha; xi++) {
         for (int nu = 0; nu < alpha; nu++) {
-            for (int k = 0; k < K; k++) {
+            for (int k = 0; k < output_channels; k++) {
                 for (int p = 0; p < P; p++) {
                     float sum = 0.0f;
-                    for (int c = 0; c < C; c++) {
+                    for (int c = 0; c < input_channels; c++) {
                         sum += U[xi][nu][k][c] * V[xi][nu][c][p];
                     }
                     M[xi][nu][k][p] = sum;
@@ -210,38 +283,42 @@ void winograd_convolution(const vector<vector<vector<vector<int>>>> &D, const ve
         }
     }
 
-    // 反变换得到输出Y_winograd
-    int out_height = H - r + 1;
-    int out_width = W - r + 1;
-    Y_winograd.resize(N, vector<vector<vector<int>>>(K, vector<vector<int>>(out_height, vector<int>(out_width, 0))));
-
-    for (int n = 0; n < N; n++) {
-        for (int k = 0; k < K; k++) {
+    // 反变换得到输出
+    memset(output_winograd, 0, sizeof(output_winograd));
+    for (int n = 0; n < batch; n++) {
+        for (int k = 0; k < output_channels; k++) {
             for (int y = 0; y < tile_h; y++) {
                 for (int x = 0; x < tile_w; x++) {
                     int b = n * (tile_h * tile_w) + y * tile_w + x;
-                    vector<vector<float>> temp_m(alpha, vector<float>(alpha));
-                    for (int xi = 0; xi < alpha; xi++) {
-                        for (int nu = 0; nu < alpha; nu++) {
+                    float temp_m[alpha][alpha];
+                    for (int xi = 0; xi < alpha; xi++)
+                        for (int nu = 0; nu < alpha; nu++)
                             temp_m[xi][nu] = M[xi][nu][k][b];
-                        }
-                    }
 
                     // A^T * temp_m * A
-                    vector<vector<float>> temp1(m, vector<float>(alpha));
-                    vector<vector<float>> Y_tile(m, vector<float>(m));
-                    vector<vector<float>> A_T;
-                    matrix_transpose(A, A_T);
-                    matrix_multiply(A_T, temp_m, temp1);
-                    matrix_multiply(temp1, A, Y_tile);
+                    float temp1[m][alpha];
+                    for (int i = 0; i < m; i++)
+                        for (int j = 0; j < alpha; j++) {
+                            temp1[i][j] = 0.0f;
+                            for (int k1 = 0; k1 < alpha; k1++)
+                                temp1[i][j] += AT[i][k1] * temp_m[k1][j];
+                        }
 
-                    // 将结果写回Y_winograd
+                    float Y_tile[m][m];
+                    for (int i = 0; i < m; i++)
+                        for (int j = 0; j < m; j++) {
+                            Y_tile[i][j] = 0.0f;
+                            for (int k1 = 0; k1 < alpha; k1++)
+                                Y_tile[i][j] += temp1[i][k1] * A[k1][j];
+                        }
+
+                    // 将结果写回output_winograd
                     for (int i = 0; i < m; i++) {
                         for (int j = 0; j < m; j++) {
                             int dst_row = y * m + i;
                             int dst_col = x * m + j;
-                            if (dst_row < out_height && dst_col < out_width) {
-                                Y_winograd[n][k][dst_row][dst_col] = static_cast<int>(round(Y_tile[i][j]));
+                            if (dst_row < output_H && dst_col < output_W) {
+                                output_winograd[n][k][dst_row][dst_col] = static_cast<int>(round(Y_tile[i][j]));
                             }
                         }
                     }
@@ -252,17 +329,12 @@ void winograd_convolution(const vector<vector<vector<vector<int>>>> &D, const ve
 }
 
 // 比较结果是否一致
-void test(const vector<vector<vector<vector<int>>>> &Y_naive, const vector<vector<vector<vector<int>>>> &Y_winograd) {
-    int N = Y_naive.size();
-    int K = Y_naive[0].size();
-    int H = Y_naive[0][0].size();
-    int W = Y_naive[0][0][0].size();
-
-    for (int n = 0; n < N; n++) {
-        for (int k = 0; k < K; k++) {
-            for (int i = 0; i < H; i++) {
-                for (int j = 0; j < W; j++) {
-                    assert(Y_naive[n][k][i][j] == Y_winograd[n][k][i][j]);
+void test(int output1[batch][output_channels][output_H][output_W], int output2[batch][output_channels][output_H][output_W]) {
+    for (int n = 0; n < batch; n++) {
+        for (int k = 0; k < output_channels; k++) {
+            for (int i = 0; i < output_H; i++) {
+                for (int j = 0; j < output_W; j++) {
+                    assert(output1[n][k][i][j] == output2[n][k][i][j]);
                 }
             }
         }
@@ -270,25 +342,28 @@ void test(const vector<vector<vector<vector<int>>>> &Y_naive, const vector<vecto
 }
 
 int main() {
-    // 生成随机输入和卷积核
-    vector<vector<vector<vector<int>>>> D;
-    vector<vector<vector<vector<int>>>> g;
-    generate_random_input_and_kernel(D, g);
+    generate_random_input_and_kernel();
+    naive_convolution();
 
-    // 进行朴素卷积
-    vector<vector<vector<vector<int>>>> Y_naive;
-    naive_convolution(D, g, Y_naive);
-
-    float avg_time = 0.0f;
+    float avg_time_im2col = 0.0f;
     for (int k = 0; k < 32; ++k) {
         auto start_time = get_time();
-        // 进行Winograd卷积
-        vector<vector<vector<vector<int>>>> Y_winograd;
-        winograd_convolution(D, g, Y_winograd);
-        test(Y_naive, Y_winograd);
+        im2col_convolution();
+        test(output_naive, output_im2col);
         printf("%f\n", get_time() - start_time);
-        avg_time += get_time() - start_time;
+        avg_time_im2col += get_time() - start_time;
     }
+    std::cout << "Average Time for im2col: " << (avg_time_im2col / 32) << " seconds" << std::endl;
+
+    float avg_time_winograd = 0.0f;
+    for (int k = 0; k < 32; ++k) {
+        auto start_time = get_time();
+        winograd_convolution();
+        test(output_naive, output_winograd);
+        printf("%f\n", get_time() - start_time);
+        avg_time_winograd += get_time() - start_time;
+    }
+    std::cout << "Average Time for Winograd: " << (avg_time_winograd / 32) << " seconds" << std::endl;
 
     return 0;
 }
