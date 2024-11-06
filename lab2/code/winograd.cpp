@@ -3,6 +3,8 @@
 #include <cmath>
 #include <cstdlib>
 #include <ctime>
+#include <cassert>
+#include <sys/time.h>
 
 using namespace std;
 
@@ -17,6 +19,12 @@ const int N = 1; // Batch size
 const int tile_h = static_cast<int>(ceil(static_cast<float>(H) / m));
 const int tile_w = static_cast<int>(ceil(static_cast<float>(W) / m));
 const int P = N * tile_h * tile_w; // Number of tiles
+
+double get_time() {
+    struct timeval tv;
+    gettimeofday(&tv, nullptr);
+    return tv.tv_sec + 1e-6 * tv.tv_usec;
+}
 
 // 矩阵乘法 (a * b) 结果保存在 c 中
 void matrix_multiply(const vector<vector<float>> &a, const vector<vector<float>> &b, vector<vector<float>> &c) {
@@ -66,7 +74,7 @@ void generate_random_input_and_kernel(vector<vector<vector<vector<int>>>> &D, ve
         for (int c = 0; c < C; c++) {
             for (int i = 0; i < r; i++) {
                 for (int j = 0; j < r; j++) {
-                    g[k][c][i][j] = (rand() % 3) - 1; // [-1, 1]
+                    g[k][c][i][j] = rand() % 10;
                 }
             }
         }
@@ -244,7 +252,7 @@ void winograd_convolution(const vector<vector<vector<vector<int>>>> &D, const ve
 }
 
 // 比较结果是否一致
-bool compare_results(const vector<vector<vector<vector<int>>>> &Y_naive, const vector<vector<vector<vector<int>>>> &Y_winograd) {
+void test(const vector<vector<vector<vector<int>>>> &Y_naive, const vector<vector<vector<vector<int>>>> &Y_winograd) {
     int N = Y_naive.size();
     int K = Y_naive[0].size();
     int H = Y_naive[0][0].size();
@@ -254,14 +262,11 @@ bool compare_results(const vector<vector<vector<vector<int>>>> &Y_naive, const v
         for (int k = 0; k < K; k++) {
             for (int i = 0; i < H; i++) {
                 for (int j = 0; j < W; j++) {
-                    if (abs(Y_naive[n][k][i][j] - Y_winograd[n][k][i][j]) > 1e-5) {
-                        return false;
-                    }
+                    assert(Y_naive[n][k][i][j] == Y_winograd[n][k][i][j]);
                 }
             }
         }
     }
-    return true;
 }
 
 int main() {
@@ -274,15 +279,15 @@ int main() {
     vector<vector<vector<vector<int>>>> Y_naive;
     naive_convolution(D, g, Y_naive);
 
-    // 进行Winograd卷积
-    vector<vector<vector<vector<int>>>> Y_winograd;
-    winograd_convolution(D, g, Y_winograd);
-
-    // 比较结果
-    if (compare_results(Y_naive, Y_winograd)) {
-        cout << "same!" << endl;
-    } else {
-        cout << "different!" << endl;
+    float avg_time = 0.0f;
+    for (int k = 0; k < 32; ++k) {
+        auto start_time = get_time();
+        // 进行Winograd卷积
+        vector<vector<vector<vector<int>>>> Y_winograd;
+        winograd_convolution(D, g, Y_winograd);
+        test(Y_naive, Y_winograd);
+        printf("%f\n", get_time() - start_time);
+        avg_time += get_time() - start_time;
     }
 
     return 0;
