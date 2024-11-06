@@ -13,6 +13,7 @@ using namespace std;
 #define I 256
 #define J 512
 #define K 1024
+const int threshold = 32;
 
 vector<vector<int>>A(I, vector<int>(K, 0));
 vector<vector<int>>B(K, vector<int>(J, 0));
@@ -83,7 +84,7 @@ vector<vector<int>>matrixSubtract(const vector<vector<int>>& X, const vector<vec
 
 vector<vector<int>>Strassen(const vector<vector<int>>& X, const vector<vector<int>>& Y) {
 	int xRow = X.size(), xCol = X[0].size(), yRow = Y.size(), yCol = Y[0].size();
-	if (xRow == 1) {
+	if (xRow == threshold) {
 		return matrixMultiply(X, Y);
 	}
 	else {
